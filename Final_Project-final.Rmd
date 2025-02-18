@@ -1,0 +1,335 @@
+---
+title: "BDA Final Project"
+author: "Hanying Li"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(rstanarm)
+library(brms)
+library(bayesplot)
+library(bayestestR)
+library(tidybayes)
+library(parameters)
+library(patchwork)
+library(magrittr)
+library(lubridate)
+library(broom)
+library(broom.mixed)
+library(ggbeeswarm)
+library(loo)
+library(emmeans)
+
+options(mc.cores = parallel::detectCores())
+set.seed(1766)
+```
+
+## The provided full-year hourly time-series are simulated using the National Renewable Energy Laboratory (NREL) software for a location in Texas, US. It has perfect data completeness, and no noisy data; challenges that hinder forecasting tasks with real datasets and distract from the goal. The dataset contains various weather features which can be analyzed and used as predictors, this datatest from the Kaggle.com. 
+(Because I changed the name of part of the data, I attached the data set I used to the comment of the homework submission section and submitted it)
+
+```{r get data}
+project_data <- read_csv("TexasTurbine.csv")
+```
+
+## First model
+
+First, please fit a Bayesian linear model where `System power generated` is the outcome, with `Wind speed ` and `Pressure` as the predictor variables with no interaction.
+```{r first model}
+model1 <- stan_glm(System_power_generated ~ Wind_speed + Pressure, data = project_data, iter = 3000, cores = 4)
+```
+## Let's take a look at the trace plots.
+```{r trace for model1}
+plot(model1, plotfun = "trace")
+```
+## A check to confirm that we have enough draws from the posterior.
+```{r check draw size}
+model1 %>%
+  as.array() %>%
+  rstan::monitor(digits = 4)
+
+```
+## summary
+```{r summaries}
+summary(model1, digits = 4)
+
+prior_summary(model1)
+```
+
+
+## check default priors
+```{r check default priors}
+describe_prior(model1)
+prior_summary(model1)
+```
+
+
+
+## another way to generate such plots
+```{r alternative way of plotting}
+plot(point_estimate(model1))
+plot(eti(model1)) 
+```
+
+
+## r pairs
+```{r pairs fo model1}
+mcmc_pairs(model1)
+```
+
+## r post prior
+```{r post prior for model1}
+posterior_vs_prior(model1, pars = c("Wind_speed", "Pressure"))
+```
+
+```{r about describe_posterior}
+describe_posterior(model1, centrality = "mean", ci=.9)
+```
+
+* the mean of wind_speed is 267.3 and the 90% Confidence interval for wind_speed is [265.54, 268.46] 
+
+
+## For the second model, fit a model where: `Wind_direction` is the outcome,  `Air_temperature` is the predictor variable, and there are separate intercepts (but not slopes) for each group as defined by `Pressure`.`. 
+```{r model 2}
+model2 <- stan_glmer( Wind_direction~ Air_temperature + (1| Pressure) , data = project_data, adapt_delta = 0.99,  iter = 3000, chains = 8,  cores = 8)
+```
+
+
+
+
+## Fit diagnostics
+```{r trace2}
+plot(model2, plotfun = "trace", pars = c("(Intercept)", "Air_temperature", "sigma"))
+```
+
+## r fixed posteriors
+```{r fixed posteriors}
+plot(model2, plotfun = "areas", pars = c("(Intercept)", "Air_temperature", "sigma"))
+```
+
+
+
+## generate the posterior predictive check plot for `model2`.
+```{r posterior predictive check for model2}
+pp_check(model2)
+```
+* the blue curve and black curce does not coincide will, so my model is not perfect.
+
+
+
+
+## Posteriors of the population level parameters
+```{r pop-level posterior}
+plot(model2, 
+     plotfun = "areas", 
+     prob = .9, 
+     pars = c("(Intercept)", "Air_temperature", "sigma"))
+```
+
+
+
+## find the mean of the posterior for the regression coefficient of `Air_temperature`
+```{r mean for Air_temperature coef}
+point_estimate(model2)
+```
+* the mean of Air_temperature cofficient is -3.21
+
+
+
+## the densities of three of the parameters
+```{r Air_temperature coef density}
+plot(model2, plotfun = "dens", pars = c("(Intercept)", "Air_temperature", "sigma"))
+```
+
+
+## the probability that the `Air_temperature` coefficient is greater than -3.0
+```{r prob calc}
+model2 %>%
+  as.data.frame() %$%
+mean(Air_temperature>-3.0)
+```
+
+* the probability that the `Air_temperature` coefficient is greater than -3 is 16.3%
+
+
+## mcmc diagostics
+```{r mcmc diagnostics}
+model2 %>%
+  as.array() %>%
+  rstan::monitor(digits = 4)
+```
+
+## A direct probability calculation
+```{r about direct probility cal}
+model2 %>%
+  as.data.frame() %>%
+  names()
+```
+
+
+
+
+## fit the base model predicting Wind_direction by Wind_speed and pressure using `brm()`
+```{r brm default model}
+model4a<- brm(Wind_direction ~ Wind_speed + Pressure, data = project_data)
+```
+
+
+
+## r check default priors brms
+```{r check default priors in brms}
+describe_prior(model4a)
+prior_summary(model4a)
+```
+
+
+## specil brms
+```{r specified brms priors }
+model4b <- brm(System_power_generated ~ Wind_direction + Wind_speed, data = project_data, prior = c(
+         prior("normal(0, 20)", class = "b", coef = "Wind_speed"),
+         prior("normal(0, 400)", class = "b", coef = "Wind_direction")
+         ))
+```
+
+
+## compare priors
+```{r compare priors}
+describe_prior(model4a)
+describe_prior(model4b)
+```
+
+```{r model used for loo1}
+model1a <- stan_glm(System_power_generated ~ Wind_speed + Wind_direction, data = project_data, iter = 3000, cores = 4)
+```
+
+
+```{r model used for loo2}
+model1b <- stan_glm(System_power_generated ~ Wind_speed + Air_temperature, data = project_data, iter = 3000, cores = 4)
+```
+
+
+## the loo function
+```{r calculate PSIS LOO-CV}
+model_loo1 <- loo(model1)
+model_loo2 <- loo(model1a)
+model_loo3 <- loo(model1b)
+```
+
+## compare loo model
+```{r compare models about loo}
+loo_compare(
+  model_loo1,
+  model_loo2,
+  model_loo3
+)
+```
+* it looks like that the model1a is much better than others
+
+```{r about loo model weights}
+loo_model_weights(list(model_loo1, model_loo2, model_loo3))
+```
+* we can see the model1's weight is lowest
+
+
+## filter function
+```{r filter and select pracice}
+project_data %>%
+  filter(Wind_direction == 128, Wind_speed=="9.926", Pressure== "1.00048") %>%
+  select(3:6)
+```
+
+
+## mutate function
+```{r about mutate}
+project_data %>%
+  mutate(total_wind=Wind_speed+Wind_direction)
+```
+
+
+
+## posterior predictive check
+```{r about pp_check}
+pp_check(model4b, nreps = 500)
+```
+* my model is not good because the blue curve and black curve doesn't mix well
+
+
+
+## 
+```{r model fit1}
+model4b %>%
+  as.array() %>%
+  rstan::monitor(digits = 4) 
+
+```
+
+
+## r pop-level posteriors
+```{r pop-level posteriors2}
+plot(
+  model4b,
+  plotfun = "areas",
+  prob = .9,
+  pars = c(
+    "(Intercept)",
+    "Wind_direction",
+    "Pressure",
+    "Wind_speed"
+  )
+)
+
+```
+
+
+## transformed posterior
+```{r transformed posterior1}
+plot(
+  model4b,
+  plotfun = "areas",
+  prob = .9,
+  pars = c(
+    "(Intercept)",
+    "Wind_direction",
+    "Pressure",
+    "Wind_speed",
+  transformation = "exp"
+) )
+```
+## Prediction
+```{r about prediction 1}
+model1 %>%
+posterior_predict() %>%
+  apply(2, quantile, prob=0.05)
+```
+## 90% predictive interval
+```{r model used to prediction 2}
+model7 <-stan_glm(Air_temperature~ Wind_direction*Pressure, adapt_delta=0.99, data=project_data)
+```
+
+```{r about prediction 2}
+model7 %>%
+  predictive_interval() %>%
+  as_tibble() %>%
+  bind_cols()
+```
+* the default is 90% so I do not use the prob argument.
+
+
+
+## A model outside those discussed in the course
+```{r about outlier}
+outlier_of_model1<- ggplot(project_data, aes(x=Wind_speed, y=Pressure)) + 
+      geom_boxplot(outlier.colour="red", outlier.shape=8,outlier.size=4)
+outlier_of_model1
+```
+* the red point means the outliers, we can find there are many outliers in my model1.
+
+
+
+### Honor Pledge
+
+On my honor, I have neither received nor given any unauthorized assistance on this project.
+
+Hanying Li
